@@ -11,7 +11,8 @@ import (
 
 
 type SubmitRequestInput struct {
-	Domain string `json:"domain" binding:"required"`
+	Domain  string `json:"domain"  binding:"required"`
+	Message string `json:"message"`
 }
 
 func SubmitRequest(c *gin.Context) {
@@ -29,11 +30,9 @@ func SubmitRequest(c *gin.Context) {
 		return
 	}
 
+	
 	validDomains := map[string]bool{
-		"GnS": true,
-		"AnC": true,
-		"SnT": true,
-		"MnC": true,
+		"GnS": true, "AnC": true, "SnT": true, "MnC": true,
 	}
 	if !validDomains[input.Domain] {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid domain. Must be GnS, AnC, SnT or MnC"})
@@ -41,37 +40,15 @@ func SubmitRequest(c *gin.Context) {
 	}
 
 	
-var existingID string
-var existingStatus string
-err := db.Pool.QueryRow(
-    context.Background(),
-    `SELECT id, status::text FROM requests WHERE student_id = $1 AND domain = $2`,
-    userID,
-    input.Domain,
-).Scan(&existingID, &existingStatus)
-
-if err == nil {
-    if existingStatus == "pending" || existingStatus == "approved" {
-        c.JSON(http.StatusConflict, gin.H{"error": "You already have a " + existingStatus + " request for this domain"})
-        return
-    }
-   
-    db.Pool.Exec(
-        context.Background(),
-        `DELETE FROM requests WHERE id = $1`,
-        existingID,
-    )
-}
-
-	
 	var requestID string
-	err = db.Pool.QueryRow(
+	err := db.Pool.QueryRow(
 		context.Background(),
-		`INSERT INTO requests (student_id, domain, status)
-		VALUES ($1, $2, 'pending')
+		`INSERT INTO requests (student_id, domain, status, message)
+		VALUES ($1, $2, 'pending', $3)
 		RETURNING id`,
 		userID,
 		input.Domain,
+		input.Message,
 	).Scan(&requestID)
 
 	if err != nil {
@@ -88,12 +65,16 @@ if err == nil {
 }
 
 
+
 func GetMyRequests(c *gin.Context) {
 	userID := c.GetString("user_id")
 
 	rows, err := db.Pool.Query(
 		context.Background(),
-		`SELECT id::text, domain::text, status::text, submitted_at::text
+		`SELECT id::text, domain::text, status::text,
+			COALESCE(message, ''),
+			COALESCE(admin_note, ''),
+			submitted_at::text
 		FROM requests
 		WHERE student_id = $1
 		ORDER BY submitted_at DESC`,
@@ -109,13 +90,18 @@ func GetMyRequests(c *gin.Context) {
 		ID          string `json:"id"`
 		Domain      string `json:"domain"`
 		Status      string `json:"status"`
+		Message     string `json:"message"`
+		AdminNote   string `json:"admin_note"`
 		SubmittedAt string `json:"submitted_at"`
 	}
 
 	var requests []RequestRow
 	for rows.Next() {
 		var r RequestRow
-		if err := rows.Scan(&r.ID, &r.Domain, &r.Status, &r.SubmittedAt); err != nil {
+		if err := rows.Scan(
+			&r.ID, &r.Domain, &r.Status,
+			&r.Message, &r.AdminNote, &r.SubmittedAt,
+		); err != nil {
 			continue
 		}
 		requests = append(requests, r)
@@ -135,8 +121,10 @@ func GetVerifiedDomains(c *gin.Context) {
 
 	rows, err := db.Pool.Query(
 		context.Background(),
-		`SELECT domain::text FROM requests
-		WHERE student_id = $1 AND status = 'approved'`,
+		`SELECT id::text, domain::text, COALESCE(message, ''), COALESCE(admin_note, ''), submitted_at::text
+		FROM requests
+		WHERE student_id = $1 AND status = 'approved'
+		ORDER BY submitted_at DESC`,
 		userID,
 	)
 	if err != nil {
@@ -145,18 +133,26 @@ func GetVerifiedDomains(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	var domains []string
+	type VerifiedRequest struct {
+		ID          string `json:"id"`
+		Domain      string `json:"domain"`
+		Message     string `json:"message"`
+		AdminNote   string `json:"admin_note"`
+		SubmittedAt string `json:"submitted_at"`
+	}
+
+	var verified []VerifiedRequest
 	for rows.Next() {
-		var d string
-		if err := rows.Scan(&d); err != nil {
+		var v VerifiedRequest
+		if err := rows.Scan(&v.ID, &v.Domain, &v.Message, &v.AdminNote, &v.SubmittedAt); err != nil {
 			continue
 		}
-		domains = append(domains, d)
+		verified = append(verified, v)
 	}
 
-	if domains == nil {
-		domains = []string{}
+	if verified == nil {
+		verified = []VerifiedRequest{}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"verified_domains": domains})
+	c.JSON(http.StatusOK, gin.H{"verified_requests": verified})
 }

@@ -21,11 +21,14 @@ func GetDomainRequests(c *gin.Context) {
 
 	rows, err := db.Pool.Query(
 		context.Background(),
-		`SELECT r.id, r.student_id, u.name, u.email,
-			r.domain::text, r.status::text, r.submitted_at::text
+		`SELECT r.id::text, r.student_id::text, u.name, u.email,
+			r.domain::text, r.status::text,
+			COALESCE(r.message, ''),
+			COALESCE(r.admin_note, ''),
+			r.submitted_at::text
 		FROM requests r
 		JOIN users u ON u.id = r.student_id
-		WHERE r.domain = $1
+		WHERE r.domain::text = $1
 		ORDER BY r.submitted_at DESC`,
 		adminDomain,
 	)
@@ -42,6 +45,8 @@ func GetDomainRequests(c *gin.Context) {
 		StudentEmail string `json:"student_email"`
 		Domain       string `json:"domain"`
 		Status       string `json:"status"`
+		Message      string `json:"message"`
+		AdminNote    string `json:"admin_note"`
 		SubmittedAt  string `json:"submitted_at"`
 	}
 
@@ -50,7 +55,8 @@ func GetDomainRequests(c *gin.Context) {
 		var r RequestRow
 		if err := rows.Scan(
 			&r.ID, &r.StudentID, &r.StudentName,
-			&r.StudentEmail, &r.Domain, &r.Status, &r.SubmittedAt,
+			&r.StudentEmail, &r.Domain, &r.Status,
+			&r.Message, &r.AdminNote, &r.SubmittedAt,
 		); err != nil {
 			continue
 		}
@@ -67,7 +73,8 @@ func GetDomainRequests(c *gin.Context) {
 
 
 type ReviewInput struct {
-	Status string `json:"status" binding:"required"`
+	Status    string `json:"status"     binding:"required"`
+	AdminNote string `json:"admin_note"`
 }
 
 func ReviewRequest(c *gin.Context) {
@@ -104,13 +111,14 @@ func ReviewRequest(c *gin.Context) {
 		return
 	}
 
-	// update status
+	
 	_, err = db.Pool.Exec(
 		context.Background(),
 		`UPDATE requests
-		SET status = $1, reviewed_at = now(), reviewed_by = $2
-		WHERE id = $3`,
+		SET status = $1, admin_note = $2, reviewed_at = now(), reviewed_by = $3
+		WHERE id = $4`,
 		input.Status,
+		input.AdminNote,
 		adminID,
 		requestID,
 	)
@@ -131,7 +139,6 @@ func ReviewRequest(c *gin.Context) {
 		requestID,
 	).Scan(&studentEmail, &studentName, &domainName)
 
-	
 	go mailer.SendRequestStatusEmail(studentEmail, studentName, domainName, input.Status)
 
 	c.JSON(http.StatusOK, gin.H{
